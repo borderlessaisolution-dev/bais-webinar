@@ -16,7 +16,9 @@ export async function POST(req: Request) {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return bad("Email 格式不对");
   if (phone.length < 9 || phone.length > 15) return bad("WhatsApp 号码不对");
 
-  const reg = await store().addRegistration({
+  let reg;
+  try {
+    reg = await store().addRegistration({
     webinar_slug: slug,
     name,
     email,
@@ -25,6 +27,10 @@ export async function POST(req: Request) {
     interest: b.interest ? String(b.interest).slice(0, 80) : null,
     utm_source: b.utm_source ? String(b.utm_source).slice(0, 80) : null,
     utm_campaign: b.utm_campaign ? String(b.utm_campaign).slice(0, 120) : null,
-  });
+    });
+  } catch (e) {
+    console.error("register failed", e);
+    return bad("系统忙，请稍后再试（" + ((e as { message?: string }).message ?? "db error").slice(0, 120) + "）", 500);
+  }
   return NextResponse.json({ id: reg.id, name: reg.name, pass: signAttendee(reg.id) });
 }
