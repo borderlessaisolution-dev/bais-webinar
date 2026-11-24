@@ -52,3 +52,35 @@ export type Registration = {
 };
 
 export type ChatMsg = { id: string; name: string; text: string; ts: number; host?: boolean };
+
+export type CourseSession = {
+  id: string;
+  webinar_slug: string;
+  label: string;
+  starts_at: string;
+  location: string;
+  capacity: number;
+  active: boolean;
+};
+export type SessionAvail = CourseSession & { taken: number; paid: number; seats_left: number };
+
+export type OrderStatus = "pending" | "paid" | "cancelled" | "expired";
+export type Order = {
+  id: string;
+  code: string;
+  webinar_slug: string;
+  session_id: string;
+  registration_id: string | null;
+  name: string;
+  email: string;
+  phone: string;
+  amount: number;
+  currency: string;
+  status: OrderStatus;
+  provider: string;
+  provider_ref: string | null;
+  hold_expires_at: string;
+  source: string | null;
+  created_at: string;
+  paid_at: string | null;
+};

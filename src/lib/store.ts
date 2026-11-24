@@ -249,14 +249,20 @@ class MemoryStore implements Store {
   }
 }
 
+let _db: SupabaseClient | null | undefined;
+/** Supabase client；本地没设环境变量时回传 null（用内存） */
+export function db(): SupabaseClient | null {
+  if (_db !== undefined) return _db;
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  _db = url && key ? createClient(url, key, { auth: { persistSession: false } }) : null;
+  return _db;
+}
+
 let _store: Store | null = null;
 export function store(): Store {
   if (_store) return _store;
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  _store =
-    url && key
-      ? new SupabaseStore(createClient(url, key, { auth: { persistSession: false } }))
-      : new MemoryStore();
+  const d = db();
+  _store = d ? new SupabaseStore(d) : new MemoryStore();
   return _store;
 }

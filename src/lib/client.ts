@@ -56,3 +56,17 @@ export async function api<T = unknown>(url: string, body?: unknown, hostKey?: st
 
 export const enc = new TextEncoder();
 export const dec = new TextDecoder();
+
+export function money(cents: number, currency = "MYR") {
+  const sym = currency === "MYR" ? "RM" : currency;
+  const v = cents / 100;
+  return `${sym} ${v.toLocaleString("en-MY", { minimumFractionDigits: v % 1 ? 2 : 0, maximumFractionDigits: 2 })}`;
+}
+
+export function gcalUrl(title: string, startIso: string, durationMin: number, details: string, location = "") {
+  const start = new Date(startIso);
+  const end = new Date(start.getTime() + durationMin * 60000);
+  const f = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const p = new URLSearchParams({ action: "TEMPLATE", text: title, dates: `${f(start)}/${f(end)}`, details, location });
+  return `https://calendar.google.com/calendar/render?${p}`;
+}

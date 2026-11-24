@@ -9,8 +9,8 @@ import {
 } from "@livekit/components-react";
 import { RoomEvent } from "livekit-client";
 import type { WebinarConfig } from "@/lib/config";
-import type { Activity, ChatMsg, LiveState, Registration } from "@/lib/types";
-import { api, dec, enc } from "@/lib/client";
+import type { Activity, ChatMsg, LiveState, Order, Registration, SessionAvail } from "@/lib/types";
+import { api, dec, enc, fmtDate, money } from "@/lib/client";
 import {
   ChatInput,
   ChatList,
@@ -93,7 +93,8 @@ function HostRoom({ w, hostKey }: { w: WebinarConfig; hostKey: string }) {
   const [hostCounts, setHostCounts] = useState<number[] | null>(null);
   const [acts, setActs] = useState<Activity[]>([]);
   const [lastId, setLastId] = useState<string | null>(null);
-  const [tab, setTab] = useState<"ctrl" | "bank" | "regs">("ctrl");
+  const [tab, setTab] = useState<"ctrl" | "bank" | "sales" | "regs">("ctrl");
+  const [offer, setOffer] = useState({ open: false, v: 0 });
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [count, setCount] = useState(0);
   const [mediaErr, setMediaErr] = useState("");
@@ -114,6 +115,20 @@ function HostRoom({ w, hostKey }: { w: WebinarConfig; hostKey: string }) {
   const broadcast = useCallback(
     (s: LiveState) => sendRef.current(enc.encode(JSON.stringify(s)), { reliable: true, topic: "state" }).catch(() => {}),
     []
+  );
+
+  const offerCh = useDataChannel("offer");
+  const offerSend = useRef(offerCh.send);
+  useEffect(() => {
+    offerSend.current = offerCh.send;
+  });
+  const toggleOffer = useCallback(
+    async (open: boolean) => {
+      const r = await api<{ offer: { open: boolean; v: number } }>("/api/host/offer", { slug: w.slug, open }, hostKey);
+      setOffer(r.offer);
+      offerSend.current(enc.encode(JSON.stringify(r.offer)), { reliable: true, topic: "offer" }).catch(() => {});
+    },
+    [w.slug, hostKey]
   );
 
   // 所有动作排队一个一个做，避免「刷新票数」和「开始下一题」互相盖掉
@@ -152,6 +167,7 @@ function HostRoom({ w, hostKey }: { w: WebinarConfig; hostKey: string }) {
   useEffect(() => {
     loadActs();
     act("refresh");
+    api<{ offer: { open: boolean; v: number } }>(`/api/state?slug=${w.slug}`).then((r) => r.offer && setOffer(r.offer)).catch(() => {});
     const upd = () => setCount(Math.max(0, room.numParticipants - 1));
     upd();
     const t = setInterval(upd, 3000);
@@ -264,7 +280,8 @@ function HostRoom({ w, hostKey }: { w: WebinarConfig; hostKey: string }) {
             [
               ["ctrl", "⚡ 互动控制"],
               ["bank", `📝 题库（${acts.length}）`],
-              ["regs", "👥 报名名单"],
+              ["sales", "💰 课程报名"],
+              ["regs", "👥 名单"],
             ] as const
           ).map(([k, l]) => (
             <button
@@ -287,8 +304,13 @@ function HostRoom({ w, hostKey }: { w: WebinarConfig; hostKey: string }) {
               nextAct={nextAct}
               act={act}
               viewers={count}
+              offer={offer}
+              toggleOffer={toggleOffer}
+              w={w}
+              hostKey={hostKey}
             />
           )}
+          {tab === "sales" && <Sales w={w} hostKey={hostKey} offer={offer} toggleOffer={toggleOffer} />}
           {tab === "bank" && <Bank w={w} hostKey={hostKey} acts={acts} reload={loadActs} act={act} goCtrl={() => setTab("ctrl")} />}
           {tab === "regs" && <Regs w={w} hostKey={hostKey} />}
         </div>
@@ -306,7 +328,15 @@ function Control({
   nextAct,
   act,
   viewers,
+  offer,
+  toggleOffer,
+  w,
+  hostKey,
 }: {
+  offer: { open: boolean; v: number };
+  toggleOffer: (open: boolean) => Promise<void>;
+  w: WebinarConfig;
+  hostKey: string;
   state: LiveState;
   remaining: number;
   answered: number;
@@ -326,6 +356,7 @@ function Control({
 
   return (
     <div className="space-y-4">
+      <OfferToggle w={w} hostKey={hostKey} offer={offer} toggleOffer={toggleOffer} />
       <div className="rounded-2xl bg-white p-4 shadow-sm">
         {state.kind === "idle" && (
           <div className="py-4 text-center">
@@ -640,6 +671,261 @@ function Regs({ w, hostKey }: { w: WebinarConfig; hostKey: string }) {
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function useSales(w: WebinarConfig, hostKey: string, everyMs = 8000) {
+  const [d, setD] = useState<{ paidCount: number; revenue: number; pendingCount: number; orders: (Order & { session_label: string })[] } | null>(null);
+  const load = useCallback(
+    () =>
+      api<{ paidCount: number; revenue: number; pendingCount: number; orders: (Order & { session_label: string })[] }>(
+        `/api/host/orders?slug=${w.slug}`,
+        undefined,
+        hostKey
+      )
+        .then(setD)
+        .catch(() => {}),
+    [w.slug, hostKey]
+  );
+  useEffect(() => {
+    load();
+    const t = setInterval(load, everyMs);
+    return () => clearInterval(t);
+  }, [load, everyMs]);
+  return { d, load };
+}
+
+function OfferToggle({
+  w,
+  hostKey,
+  offer,
+  toggleOffer,
+}: {
+  w: WebinarConfig;
+  hostKey: string;
+  offer: { open: boolean; v: number };
+  toggleOffer: (open: boolean) => Promise<void>;
+}) {
+  const { d } = useSales(w, hostKey, 5000);
+  const [busy, setBusy] = useState(false);
+  const click = async () => {
+    setBusy(true);
+    await toggleOffer(!offer.open).finally(() => setBusy(false));
+  };
+  return offer.open ? (
+    <div className="rounded-2xl bg-gradient-to-r from-amber-400 to-gold p-4 text-ink shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold">🎓 报名弹窗开放中 · 所有学员都看到了</p>
+          <p className="mt-0.5 text-xs opacity-80">
+            已付款 <b className="text-base tabular-nums">{d?.paidCount ?? 0}</b> 人 · {money(d?.revenue ?? 0)}
+            {d?.pendingCount ? ` · ${d.pendingCount} 人正在付款` : ""}
+          </p>
+        </div>
+        <button disabled={busy} onClick={click} className="shrink-0 rounded-xl bg-ink px-3 py-2 text-sm font-bold text-white disabled:opacity-50">
+          关闭弹窗
+        </button>
+      </div>
+    </div>
+  ) : (
+    <button
+      disabled={busy}
+      onClick={click}
+      className="w-full rounded-2xl bg-gold px-4 py-4 text-lg font-extrabold text-ink shadow-sm transition active:scale-[0.98] disabled:opacity-50"
+    >
+      🎓 开放正式课程报名（全部学员弹出）
+    </button>
+  );
+}
+
+function Sales({
+  w,
+  hostKey,
+  offer,
+  toggleOffer,
+}: {
+  w: WebinarConfig;
+  hostKey: string;
+  offer: { open: boolean; v: number };
+  toggleOffer: (open: boolean) => Promise<void>;
+}) {
+  const { d, load } = useSales(w, hostKey);
+  const [sessions, setSessions] = useState<SessionAvail[]>([]);
+  const empty = { label: "", starts_at: "", location: "", capacity: 20 };
+  const [f, setF] = useState<typeof empty & { id?: string; active?: boolean }>(empty);
+  const [open, setOpen] = useState(false);
+  const [err, setErr] = useState("");
+
+  const loadSessions = useCallback(
+    () => api<{ sessions: SessionAvail[] }>(`/api/host/sessions?slug=${w.slug}`, undefined, hostKey).then((r) => setSessions(r.sessions)),
+    [w.slug, hostKey]
+  );
+  useEffect(() => {
+    loadSessions();
+    const t = setInterval(loadSessions, 10000);
+    return () => clearInterval(t);
+  }, [loadSessions]);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setErr("");
+    try {
+      // datetime-local 没有时区 → 当作马来西亚时间
+      const iso = f.starts_at.length === 16 ? `${f.starts_at}:00+08:00` : f.starts_at;
+      await api("/api/host/sessions", { ...f, starts_at: iso, slug: w.slug }, hostKey);
+      setF(empty);
+      setOpen(false);
+      loadSessions();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+  async function del(id: string) {
+    await fetch(`/api/host/sessions?id=${id}`, { method: "DELETE", headers: { "x-host-key": hostKey } });
+    loadSessions();
+  }
+  const toLocal = (iso: string) => {
+    const d = new Date(new Date(iso).getTime() + 8 * 3600000);
+    return d.toISOString().slice(0, 16);
+  };
+  const inp = "w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand";
+  const badge: Record<string, string> = {
+    paid: "bg-emerald-100 text-emerald-700",
+    pending: "bg-amber-100 text-amber-700",
+    cancelled: "bg-slate-100 text-slate-500",
+    expired: "bg-slate-100 text-slate-500",
+  };
+  const label: Record<string, string> = { paid: "已付款", pending: "付款中", cancelled: "已取消", expired: "已过期" };
+
+  return (
+    <div className="space-y-4">
+      <OfferToggle w={w} hostKey={hostKey} offer={offer} toggleOffer={toggleOffer} />
+
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          [String(d?.paidCount ?? 0), "已付款"],
+          [money(d?.revenue ?? 0), "收入"],
+          [String(d?.pendingCount ?? 0), "付款中"],
+        ].map(([v, l]) => (
+          <div key={l} className="rounded-2xl bg-white p-3 shadow-sm">
+            <div className="truncate text-xl font-extrabold tabular-nums">{v}</div>
+            <div className="text-xs text-slate-500">{l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-2xl bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center">
+          <h3 className="flex-1 font-bold">📅 开课日期与名额</h3>
+          {!open && (
+            <button onClick={() => setOpen(true)} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white">
+              ＋ 新增
+            </button>
+          )}
+        </div>
+        {open && (
+          <form onSubmit={save} className="mb-4 space-y-2 rounded-xl bg-slate-50 p-3">
+            <input required value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} placeholder="名称，例如：第 1 期 · 12月20–21日" className={inp} />
+            <label className="block text-xs text-slate-500">
+              开课时间（马来西亚时间）
+              <input required type="datetime-local" value={f.starts_at} onChange={(e) => setF({ ...f, starts_at: e.target.value })} className={inp + " mt-1"} />
+            </label>
+            <input value={f.location} onChange={(e) => setF({ ...f, location: e.target.value })} placeholder="地点（例如：Subang Jaya 培训中心 / 线上）" className={inp} />
+            <label className="flex items-center gap-2 text-sm">
+              名额
+              <input type="number" min={1} value={f.capacity} onChange={(e) => setF({ ...f, capacity: Number(e.target.value) })} className={inp + " w-24"} />
+            </label>
+            {err && <p className="text-sm text-red-600">{err}</p>}
+            <div className="flex gap-2">
+              <button type="button" onClick={() => { setOpen(false); setF(empty); }} className="flex-1 rounded-lg bg-white py-2 font-semibold ring-1 ring-slate-200">
+                取消
+              </button>
+              <button className="flex-1 rounded-lg bg-brand py-2 font-semibold text-white">保存</button>
+            </div>
+          </form>
+        )}
+        {sessions.length === 0 && !open && <p className="text-sm text-slate-500">还没有开课日期，学员报名页会显示「日期还没公布」。</p>}
+        <div className="space-y-2">
+          {sessions.map((s) => (
+            <div key={s.id} className={`rounded-xl border border-slate-100 p-3 ${s.active ? "" : "opacity-50"}`}>
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold">
+                    {s.label} {!s.active && <span className="text-xs text-slate-400">（已关闭）</span>}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {fmtDate(s.starts_at).date} {fmtDate(s.starts_at).time.split("（")[0]} {s.location && `· ${s.location}`}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <div className="font-extrabold tabular-nums">
+                    {s.paid}/{s.capacity}
+                  </div>
+                  <div className="text-[11px] text-slate-400">已付 / 名额</div>
+                </div>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full bg-emerald-500" style={{ width: `${Math.min(100, (s.paid / s.capacity) * 100)}%` }} />
+              </div>
+              <div className="mt-2 flex justify-end gap-3 text-xs text-slate-400">
+                <button
+                  onClick={() => {
+                    setF({ id: s.id, label: s.label, starts_at: toLocal(s.starts_at), location: s.location, capacity: s.capacity, active: s.active });
+                    setOpen(true);
+                  }}
+                >
+                  编辑
+                </button>
+                {s.active ? (
+                  <button onClick={() => del(s.id)} className="text-red-400">
+                    {s.taken > 0 ? "关闭报名" : "删除"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={async () => {
+                      await api("/api/host/sessions", { ...s, slug: w.slug, active: true }, hostKey);
+                      loadSessions();
+                    }}
+                  >
+                    重新开放
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center gap-2">
+          <h3 className="flex-1 font-bold">🧾 订单</h3>
+          <button onClick={load} className="text-xs text-slate-400">刷新</button>
+          <a
+            href={`/api/host/orders?slug=${w.slug}&format=csv&key=${encodeURIComponent(hostKey)}`}
+            className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
+          >
+            ⬇ CSV
+          </a>
+        </div>
+        {!d?.orders.length && <p className="text-sm text-slate-500">还没有订单</p>}
+        <div className="divide-y divide-slate-100">
+          {d?.orders.map((o) => (
+            <div key={o.id} className="flex items-center gap-2 py-2 text-sm">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">
+                  {o.name} <span className="font-mono text-xs text-slate-400">{o.code}</span>
+                </p>
+                <p className="truncate text-xs text-slate-500">
+                  +{o.phone} · {o.session_label}
+                </p>
+              </div>
+              <span className="tabular-nums">{money(o.amount, o.currency)}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${badge[o.status]}`}>{label[o.status]}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

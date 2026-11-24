@@ -18,6 +18,19 @@ export type WebinarConfig = {
   communityLink: string;
   interests: string[];
   theme: { primary: string; primaryDark: string; accent: string };
+  /** 直播最后推的正式课程 */
+  offer: {
+    title: string;
+    subtitle: string;
+    bullets: string[];
+    /** 以「分」为单位：RM 298 = 29800 */
+    priceCents: number;
+    /** 原价（划掉显示，可不填） */
+    compareAtCents?: number;
+    currency: "MYR";
+    badge?: string;
+    note?: string;
+  };
 };
 
 export const WEBINARS: Record<string, WebinarConfig> = {
@@ -51,6 +64,21 @@ export const WEBINARS: Record<string, WebinarConfig> = {
     communityLink: "https://chat.whatsapp.com/REPLACE_WITH_COMMUNITY_INVITE",
     interests: ["产后康复技术", "体态评估", "开店 / 增加服务项目", "只是想了解"],
     theme: { primary: "#1d4ed8", primaryDark: "#0b1f5c", accent: "#f59e0b" },
+    offer: {
+      title: "蓝丝带产后康复 · 正式培训课程",
+      subtitle: "从评估到实操，学会一套能直接用在客人身上的产后康复技术。",
+      bullets: [
+        "完整产后体态与骨盆评估流程",
+        "腹直肌、骨盆、体态的实操手法",
+        "真人案例示范 + 导师现场纠正",
+        "结业证书 + 课后学员群支持",
+      ],
+      priceCents: 29800,
+      compareAtCents: 59800,
+      currency: "MYR",
+      badge: "Preview Class 学员专属价",
+      note: "付款后名额才算锁定；没付款的名额 35 分钟后自动释放。",
+    },
   },
 };
 

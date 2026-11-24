@@ -12,7 +12,7 @@ import {
 import { ConnectionState, RoomEvent } from "livekit-client";
 import type { WebinarConfig } from "@/lib/config";
 import type { ChatMsg, LiveState } from "@/lib/types";
-import { api, dec, enc, fmtDate, loadPass, savePass } from "@/lib/client";
+import { api, dec, enc, fmtDate, loadPass, money, savePass } from "@/lib/client";
 import {
   ChatInput,
   ChatList,
@@ -143,6 +143,16 @@ function Room({ w, me }: { w: WebinarConfig; me: Conn }) {
   const ansKey = `bais-ans-${w.slug}-${me.id}`;
   const [answers, setAnswers] = useState<Record<string, MyAnswer>>({});
   const [toast, setToast] = useState("");
+  const [offer, setOffer] = useState({ open: false, v: 0 });
+  const [sheet, setSheet] = useState(false);
+  const offerRef = useRef(offer);
+  const applyOffer = useCallback((o: { open: boolean; v: number }) => {
+    if (o.v < offerRef.current.v) return;
+    if (o.open && !offerRef.current.open) setSheet(true); // 老师一开就弹出来
+    if (!o.open) setSheet(false);
+    offerRef.current = o;
+    setOffer(o);
+  }, []);
 
   useEffect(() => {
     try {
@@ -168,12 +178,15 @@ function Room({ w, me }: { w: WebinarConfig; me: Conn }) {
 
   const fetchState = useCallback(async () => {
     const t0 = Date.now();
-    const r = await api<{ state: LiveState; now: number }>(`/api/state?slug=${w.slug}`).catch(() => null);
+    const r = await api<{ state: LiveState; offer: { open: boolean; v: number }; now: number }>(
+      `/api/state?slug=${w.slug}`
+    ).catch(() => null);
     if (!r) return;
     const rtt = Date.now() - t0;
     setOffset(r.now + rtt / 2 - Date.now());
     applyState(r.state);
-  }, [w.slug, applyState]);
+    if (r.offer) applyOffer(r.offer);
+  }, [w.slug, applyState, applyOffer]);
 
   useEffect(() => {
     fetchState();
@@ -193,6 +206,13 @@ function Room({ w, me }: { w: WebinarConfig; me: Conn }) {
     if (m.from?.identity !== "host") return; // 只听老师的
     try {
       applyState(JSON.parse(dec.decode(m.payload)));
+    } catch {}
+  });
+
+  useDataChannel("offer", (m) => {
+    if (m.from?.identity !== "host") return;
+    try {
+      applyOffer(JSON.parse(dec.decode(m.payload)));
     } catch {}
   });
 
@@ -319,6 +339,7 @@ function Room({ w, me }: { w: WebinarConfig; me: Conn }) {
         <div className={`${!hasAct || tab === "chat" ? "flex" : "hidden"} min-h-0 flex-1 flex-col md:hidden`}>
           <ChatList msgs={msgs} />
         </div>
+        {offer.open && <OfferBanner w={w} onOpen={() => setSheet(true)} />}
         <div className="md:hidden">
           <ChatInput onSend={sendChat} onEmoji={sendEmoji} />
         </div>
@@ -330,8 +351,11 @@ function Room({ w, me }: { w: WebinarConfig; me: Conn }) {
         <div className="flex min-h-0 flex-1 flex-col">
           <ChatList msgs={msgs} />
         </div>
+        {offer.open && <OfferBanner w={w} onOpen={() => setSheet(true)} />}
         <ChatInput onSend={sendChat} onEmoji={sendEmoji} />
       </aside>
+
+      {offer.open && sheet && <OfferSheet w={w} onClose={() => setSheet(false)} />}
 
       {toast && (
         <div className="pop-in fixed left-1/2 top-16 z-50 -translate-x-1/2 rounded-full bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
@@ -462,6 +486,79 @@ function ActivityPanel({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function checkoutHref(w: WebinarConfig) {
+  return `/checkout/${w.slug}?src=live`;
+}
+
+function OfferBanner({ w, onOpen }: { w: WebinarConfig; onOpen: () => void }) {
+  return (
+    <div className="flex items-center gap-2 border-t border-amber-200 bg-amber-50 px-3 py-2">
+      <button onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <span className="block truncate text-sm font-bold text-amber-900">🎓 正式课程报名开放中</span>
+        <span className="block truncate text-xs text-amber-700">
+          {w.offer.badge ?? w.offer.title} · {money(w.offer.priceCents, w.offer.currency)}
+        </span>
+      </button>
+      <a
+        href={checkoutHref(w)}
+        target="_blank"
+        rel="noreferrer"
+        className="shrink-0 rounded-full bg-gold px-4 py-2 text-sm font-extrabold text-ink"
+      >
+        立即报名
+      </a>
+    </div>
+  );
+}
+
+function OfferSheet({ w, onClose }: { w: WebinarConfig; onClose: () => void }) {
+  const o = w.offer;
+  return (
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/50 md:items-center" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="pop-in w-full max-w-md rounded-t-3xl bg-white p-6 pb-[max(env(safe-area-inset-bottom),24px)] md:rounded-3xl"
+      >
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            {o.badge && (
+              <span className="inline-block rounded-full bg-gold px-3 py-1 text-xs font-bold text-ink">🎓 {o.badge}</span>
+            )}
+            <h3 className="mt-2 text-xl font-extrabold leading-snug">{o.title}</h3>
+          </div>
+          <button onClick={onClose} aria-label="关闭" className="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-500">
+            ✕
+          </button>
+        </div>
+        <p className="mt-2 text-sm text-slate-500">{o.subtitle}</p>
+        <ul className="mt-4 space-y-1.5">
+          {o.bullets.map((b) => (
+            <li key={b} className="flex gap-2 text-[15px]">
+              <span className="text-emerald-500">✓</span>
+              {b}
+            </li>
+          ))}
+        </ul>
+        <div className="mt-5 flex items-end gap-2">
+          <span className="text-3xl font-extrabold">{money(o.priceCents, o.currency)}</span>
+          {o.compareAtCents && <span className="pb-1 text-slate-400 line-through">{money(o.compareAtCents, o.currency)}</span>}
+        </div>
+        <a
+          href={checkoutHref(w)}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-4 block rounded-xl bg-brand py-4 text-center text-lg font-extrabold text-white active:scale-[0.98]"
+        >
+          立即报名 · 选上课日期 →
+        </a>
+        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-slate-400">
+          继续看直播，稍后再报名
+        </button>
+      </div>
     </div>
   );
 }
